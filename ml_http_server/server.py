@@ -1,5 +1,6 @@
 import socket
 import json
+import threading
 
 HOST = "127.0.0.1"
 PORT = 8080
@@ -96,24 +97,17 @@ def handle_route(method, path, body_text):
         }
 
 
-server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server_socket.bind((HOST, PORT))
-server_socket.listen(5)
-
-print(f"Server listening on http://{HOST}:{PORT}")
-
-while True:
-    client_socket, client_address = server_socket.accept()
+def handle_client(client_socket, client_address):
     print(f"Accepted connection from {client_address}")
 
-    request_data = client_socket.recv(4096)
-    request_text = request_data.decode("utf-8", errors="ignore")
-
-    print("---- Raw Request ----")
-    print(request_text)
-    print("---------------------")
-
     try:
+        request_data = client_socket.recv(4096)
+        request_text = request_data.decode("utf-8", errors="ignore")
+
+        print("---- Raw Request ----")
+        print(request_text)
+        print("---------------------")
+
         method, path, version, body_text = parse_http_request(request_text)
 
         print(f"Method:  {method}")
@@ -126,8 +120,27 @@ while True:
     except ValueError as e:
         status_line = "HTTP/1.1 400 Bad Request"
         response_body_dict = {"error": str(e)}
+    except Exception as e:
+        print(f"Unexpected server error: {e}")
+        status_line = "HTTP/1.1 500 Internal Server Error"
+        response_body_dict = {"error": "Internal Server Error"}
 
     response = json_response(status_line, response_body_dict)
-
     client_socket.sendall(response)
     client_socket.close()
+
+
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_socket.bind((HOST, PORT))
+server_socket.listen(5)
+
+print(f"Server listening on http://{HOST}:{PORT}")
+
+while True:
+    client_socket, client_address = server_socket.accept()
+
+    client_thread = threading.Thread(
+        target=handle_client,
+        args=(client_socket, client_address)
+    )
+    client_thread.start()
