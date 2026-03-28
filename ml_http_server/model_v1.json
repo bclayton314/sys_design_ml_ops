@@ -1,0 +1,7 @@
+{
+  "model_name": "linear_regression_demo",
+  "model_version": "v1.0.0",
+  "trained_at": "2026-03-28T12:00:00",
+  "bias": 1.5,
+  "weights": [2.0, 1.0]
+}

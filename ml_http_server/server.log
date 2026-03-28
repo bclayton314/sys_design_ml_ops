@@ -1,0 +1,19 @@
+[2026-03-28 09:54:43] Model loaded: bias=1.5, weights=[2.0, 1.0]
+[2026-03-28 09:54:43] Server running at http://127.0.0.1:8080
+[2026-03-28 09:55:16] Accepted connection from ('127.0.0.1', 50111)
+[2026-03-28 09:55:16] POST /predict from 127.0.0.1
+[2026-03-28 09:55:16] POST /predict from 127.0.0.1 features=[2.0, 3.0] prediction=8.5 latency_ms=0.0270
+[2026-03-28 09:55:45] Accepted connection from ('127.0.0.1', 50145)
+[2026-03-28 09:55:45] POST /predict from 127.0.0.1
+[2026-03-28 10:09:05] Model loaded: name=linear_regression_demo version=v1.0.0 trained_at=2026-03-28T12:00:00 bias=1.5 weights=[2.0, 1.0]
+[2026-03-28 10:09:05] Server running at http://127.0.0.1:8080
+[2026-03-28 10:09:36] Accepted connection from ('127.0.0.1', 50983)
+[2026-03-28 10:09:36] GET /metrics from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 10:09:51] Accepted connection from ('127.0.0.1', 50996)
+[2026-03-28 10:09:51] POST /predict from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 10:09:51] POST /predict from 127.0.0.1 model=linear_regression_demo version=v1.0.0 features=[2.0, 3.0] prediction=8.5 latency_ms=0.0282
+[2026-03-28 10:09:56] Accepted connection from ('127.0.0.1', 51002)
+[2026-03-28 10:09:56] GET /metrics from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 11:22:58] Model loaded: name=linear_regression_demo version=v1.0.0 trained_at=2026-03-28T12:00:00 source=c:\Users\Clayt\OneDrive\Desktop\ExtraC\AI_ML\Projects\sys_design_ml_ops\sys_design_ml_ops\ml_http_server\model_v1.json
+[2026-03-28 11:22:58] Model loaded: name=linear_regression_demo version=v2.0.0 trained_at=2026-03-29T09:30:00 source=c:\Users\Clayt\OneDrive\Desktop\ExtraC\AI_ML\Projects\sys_design_ml_ops\sys_design_ml_ops\ml_http_server\model_v2.json
+[2026-03-28 11:22:58] Server running at http://127.0.0.1:8080
