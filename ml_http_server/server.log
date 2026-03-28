@@ -17,3 +17,54 @@
 [2026-03-28 11:22:58] Model loaded: name=linear_regression_demo version=v1.0.0 trained_at=2026-03-28T12:00:00 source=c:\Users\Clayt\OneDrive\Desktop\ExtraC\AI_ML\Projects\sys_design_ml_ops\sys_design_ml_ops\ml_http_server\model_v1.json
 [2026-03-28 11:22:58] Model loaded: name=linear_regression_demo version=v2.0.0 trained_at=2026-03-29T09:30:00 source=c:\Users\Clayt\OneDrive\Desktop\ExtraC\AI_ML\Projects\sys_design_ml_ops\sys_design_ml_ops\ml_http_server\model_v2.json
 [2026-03-28 11:22:58] Server running at http://127.0.0.1:8080
+[2026-03-28 13:57:05] Model loaded: name=linear_regression_demo version=v1.0.0 trained_at=2026-03-28T12:00:00 source=c:\Users\Clayt\OneDrive\Desktop\ExtraC\AI_ML\Projects\sys_design_ml_ops\sys_design_ml_ops\ml_http_server\model_v1.json
+[2026-03-28 13:57:05] Model loaded: name=linear_regression_demo version=v2.0.0 trained_at=2026-03-29T09:30:00 source=c:\Users\Clayt\OneDrive\Desktop\ExtraC\AI_ML\Projects\sys_design_ml_ops\sys_design_ml_ops\ml_http_server\model_v2.json
+[2026-03-28 13:57:05] Server running at http://127.0.0.1:8080
+[2026-03-28 13:57:28] Accepted connection from ('127.0.0.1', 61042)
+[2026-03-28 13:57:28] GET /models from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 13:58:39] Accepted connection from ('127.0.0.1', 61093)
+[2026-03-28 13:58:39] GET /active-model from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 13:59:18] Accepted connection from ('127.0.0.1', 61122)
+[2026-03-28 13:59:18] POST /predict from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 13:59:18] POST /predict from 127.0.0.1 model=linear_regression_demo version=v1.0.0 features=[2.0, 3.0] prediction=8.5 latency_ms=0.0455
+[2026-03-28 14:00:17] Accepted connection from ('127.0.0.1', 61170)
+[2026-03-28 14:00:17] POST /switch-model from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 14:00:17] Switched active model from v1.0.0 to v2.0.0
+[2026-03-28 14:00:44] Accepted connection from ('127.0.0.1', 61193)
+[2026-03-28 14:00:44] POST /predict from 127.0.0.1 active_model=linear_regression_demo:v2.0.0
+[2026-03-28 14:00:44] POST /predict from 127.0.0.1 model=linear_regression_demo version=v2.0.0 features=[2.0, 3.0] prediction=10.4 latency_ms=0.0519
+[2026-03-28 14:10:44] Initial models loaded: versions=['v1.0.0', 'v2.0.0'], active_model=v1.0.0
+[2026-03-28 14:10:44] Server running at http://127.0.0.1:8080
+[2026-03-28 14:16:02] Accepted connection from ('127.0.0.1', 62028)
+[2026-03-28 14:16:02] POST /predict from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 14:16:02] POST /predict from 127.0.0.1 model=linear_regression_demo version=v1.0.0 features=[2.0, 3.0] prediction=8.5 latency_ms=0.0483
+[2026-03-28 14:36:27] Initial models loaded: versions=['v1.0.0', 'v2.0.0'], active_model=v1.0.0
+[2026-03-28 14:36:27] Server running at http://127.0.0.1:8080
+[2026-03-28 14:41:14] Initial models loaded: versions=['v1.0.0', 'v2.0.0'], active_model=v1.0.0
+[2026-03-28 14:41:14] Server running at http://127.0.0.1:8080
+[2026-03-28 14:41:22] Accepted connection from ('127.0.0.1', 63184)
+[2026-03-28 14:41:22] POST /predict from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 14:41:22] POST /predict from 127.0.0.1 model=linear_regression_demo version=v1.0.0 features=[2.0, 3.0] prediction=8.5 latency_ms=0.0400
+[2026-03-28 14:41:51] Accepted connection from ('127.0.0.1', 63209)
+[2026-03-28 14:41:51] POST /predict-batch from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 14:41:51] POST /predict-batch from 127.0.0.1 model=linear_regression_demo version=v1.0.0 batch_size=3 predictions=[8.5, 7.5, 3.0] latency_ms=0.0437
+[2026-03-28 14:42:21] Accepted connection from ('127.0.0.1', 63229)
+[2026-03-28 14:42:21] POST /predict-batch from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 14:42:21] POST /predict-batch from 127.0.0.1 model=linear_regression_demo version=v1.0.0 error=Expected 2 features per instance
+[2026-03-28 14:42:37] Accepted connection from ('127.0.0.1', 63241)
+[2026-03-28 14:42:37] GET /metrics from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 14:54:18] Initial models loaded: versions=['v1.0.0', 'v2.0.0'], active_model=v1.0.0
+[2026-03-28 14:54:18] Server running at http://127.0.0.1:8080
+[2026-03-28 14:55:09] Accepted connection from ('127.0.0.1', 63955)
+[2026-03-28 14:55:09] POST /reload-models from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 14:55:09] Reloaded models from disk. old_versions=['v1.0.0', 'v2.0.0'] new_versions=['v1.0.0', 'v2.0.0'] old_active=v1.0.0 new_active=v1.0.0 preserved_active=True
+[2026-03-28 14:55:40] Accepted connection from ('127.0.0.1', 63980)
+[2026-03-28 14:55:40] POST /predict from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 14:55:40] POST /predict from 127.0.0.1 model=linear_regression_demo version=v1.0.0 features=[2.0, 3.0] prediction=8.425340198501186 latency_ms=0.0288
+[2026-03-28 15:08:11] Initial models loaded: versions=['v1.0.0', 'v2.0.0'], active_model=v1.0.0
+[2026-03-28 15:08:11] Server running at http://127.0.0.1:8080
+[2026-03-28 15:08:59] Accepted connection from ('127.0.0.1', 65132)
+[2026-03-28 15:08:59] GET /model-info from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 15:09:11] Accepted connection from ('127.0.0.1', 65144)
+[2026-03-28 15:09:11] POST /predict from 127.0.0.1 active_model=linear_regression_demo:v1.0.0
+[2026-03-28 15:09:11] POST /predict from 127.0.0.1 model=linear_regression_demo version=v1.0.0 features=[2.0, 3.0] prediction=8.416535128050954 latency_ms=0.0468

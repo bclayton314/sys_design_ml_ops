@@ -16,11 +16,6 @@ MODEL_PATHS = [
 ]
 LOG_PATH = os.path.join(SCRIPT_DIR, "server.log")
 
-# MODEL_PATHS = [
-#     "model_v1.json",
-#     "model_v2.json",
-# ]
-
 
 # ------------------------
 # Metrics (shared state)
@@ -30,8 +25,14 @@ metrics = {
     "prediction_requests": 0,
     "prediction_successes": 0,
     "prediction_errors": 0,
-    "model_switches": 0,
+    "batch_prediction_requests": 0,
+    "batch_prediction_successes": 0,
+    "batch_prediction_errors": 0,
     "total_prediction_latency_ms": 0.0,
+    "total_batch_prediction_latency_ms": 0.0,
+    "total_batch_instances": 0,
+    "model_switches": 0,
+    "model_reloads": 0,
 }
 
 metrics_lock = threading.Lock()
@@ -68,22 +69,20 @@ def load_model(path):
         if field not in model_data:
             raise ValueError(f"Missing required model field: {field}")
 
+    if not isinstance(model_data["weights"], list):
+        raise ValueError("Model field 'weights' must be a list")
+
     model = {
         "model_name": model_data["model_name"],
         "model_version": model_data["model_version"],
         "trained_at": model_data["trained_at"],
         "bias": model_data["bias"],
         "weights": model_data["weights"],
+        "training_summary": model_data.get("training_summary", {}),
+        "evaluation_metrics": model_data.get("evaluation_metrics", {}),
         "source_path": path,
     }
 
-    log_message(
-        "Model loaded: "
-        f"name={model['model_name']} "
-        f"version={model['model_version']} "
-        f"trained_at={model['trained_at']} "
-        f"source={model['source_path']}"
-    )
     return model
 
 
@@ -112,10 +111,20 @@ model_lock = threading.Lock()
 if active_model_version not in models:
     raise ValueError(f"Configured active model version not found: {active_model_version}")
 
+log_message(
+    f"Initial models loaded: versions={list(models.keys())}, "
+    f"active_model={active_model_version}"
+)
+
 
 def get_active_model():
     with model_lock:
         return models[active_model_version]
+
+
+def get_active_model_version():
+    with model_lock:
+        return active_model_version
 
 
 def switch_active_model(new_version):
@@ -134,19 +143,95 @@ def switch_active_model(new_version):
     log_message(f"Switched active model from {old_version} to {new_version}")
 
 
-def predict(features):
+def reload_models_from_disk():
+    global models, active_model_version
+
+    new_models = load_models(MODEL_PATHS)
+
+    with model_lock:
+        old_versions = list(models.keys())
+        old_active_version = active_model_version
+
+        models = new_models
+
+        if old_active_version in models:
+            active_model_version = old_active_version
+            preserved = True
+        else:
+            active_model_version = sorted(models.keys())[0]
+            preserved = False
+
+        new_versions = list(models.keys())
+        new_active_version = active_model_version
+
+    with metrics_lock:
+        metrics["model_reloads"] += 1
+
+    log_message(
+        f"Reloaded models from disk. "
+        f"old_versions={old_versions} "
+        f"new_versions={new_versions} "
+        f"old_active={old_active_version} "
+        f"new_active={new_active_version} "
+        f"preserved_active={preserved}"
+    )
+
+    return {
+        "available_versions": new_versions,
+        "old_active_version": old_active_version,
+        "new_active_version": new_active_version,
+        "preserved_active": preserved,
+    }
+
+
+# ------------------------
+# Prediction helpers
+# ------------------------
+def validate_features(features, expected_length):
+    if not isinstance(features, list):
+        raise ValueError("Each feature vector must be a list")
+
+    if len(features) != expected_length:
+        raise ValueError(f"Expected {expected_length} features per instance")
+
+
+def predict_one(features):
     active_model = get_active_model()
     weights = active_model["weights"]
     bias = active_model["bias"]
 
-    if len(features) != len(weights):
-        raise ValueError(f"Expected {len(weights)} features")
+    validate_features(features, len(weights))
 
     result = bias
     for x, w in zip(features, weights):
         result += x * w
 
     return result, active_model
+
+
+def predict_batch(instances):
+    if not isinstance(instances, list):
+        raise ValueError("'instances' must be a list")
+
+    if len(instances) == 0:
+        raise ValueError("'instances' must not be empty")
+
+    active_model = get_active_model()
+    weights = active_model["weights"]
+    bias = active_model["bias"]
+
+    predictions = []
+
+    for features in instances:
+        validate_features(features, len(weights))
+
+        result = bias
+        for x, w in zip(features, weights):
+            result += x * w
+
+        predictions.append(result)
+
+    return predictions, active_model
 
 
 # ------------------------
@@ -188,11 +273,23 @@ def get_metrics_snapshot():
 
     with metrics_lock:
         prediction_successes = metrics["prediction_successes"]
-        total_latency = metrics["total_prediction_latency_ms"]
+        batch_prediction_successes = metrics["batch_prediction_successes"]
 
-        avg_latency = (
-            total_latency / prediction_successes
+        avg_prediction_latency = (
+            metrics["total_prediction_latency_ms"] / prediction_successes
             if prediction_successes > 0
+            else 0.0
+        )
+
+        avg_batch_prediction_latency = (
+            metrics["total_batch_prediction_latency_ms"] / batch_prediction_successes
+            if batch_prediction_successes > 0
+            else 0.0
+        )
+
+        avg_batch_size = (
+            metrics["total_batch_instances"] / metrics["batch_prediction_requests"]
+            if metrics["batch_prediction_requests"] > 0
             else 0.0
         )
 
@@ -201,8 +298,15 @@ def get_metrics_snapshot():
             "prediction_requests": metrics["prediction_requests"],
             "prediction_successes": metrics["prediction_successes"],
             "prediction_errors": metrics["prediction_errors"],
+            "batch_prediction_requests": metrics["batch_prediction_requests"],
+            "batch_prediction_successes": metrics["batch_prediction_successes"],
+            "batch_prediction_errors": metrics["batch_prediction_errors"],
             "model_switches": metrics["model_switches"],
-            "avg_prediction_latency_ms": round(avg_latency, 4),
+            "model_reloads": metrics["model_reloads"],
+            "avg_prediction_latency_ms": round(avg_prediction_latency, 4),
+            "avg_batch_prediction_latency_ms": round(avg_batch_prediction_latency, 4),
+            "avg_batch_size": round(avg_batch_size, 4),
+            "total_batch_instances": metrics["total_batch_instances"],
             "active_model_name": active_model["model_name"],
             "active_model_version": active_model["model_version"],
         }
@@ -252,12 +356,14 @@ def handle_route(method, path, body_text, client_address):
             "weights": active_model["weights"],
             "num_features": len(active_model["weights"]),
             "source_path": active_model["source_path"],
+            "training_summary": active_model.get("training_summary", {}),
+            "evaluation_metrics": active_model.get("evaluation_metrics", {}),
         }
 
     elif method == "GET" and path == "/models":
         return "HTTP/1.1 200 OK", {
             "available_models": get_available_models(),
-            "active_model_version": active_model["model_version"],
+            "active_model_version": get_active_model_version(),
         }
 
     elif method == "GET" and path == "/active-model":
@@ -306,6 +412,27 @@ def handle_route(method, path, body_text, client_address):
                 "error": str(e)
             }
 
+    elif method == "POST" and path == "/reload-models":
+        try:
+            reload_result = reload_models_from_disk()
+            reloaded_active_model = get_active_model()
+
+            return "HTTP/1.1 200 OK", {
+                "message": "Models reloaded successfully",
+                "available_versions": reload_result["available_versions"],
+                "old_active_version": reload_result["old_active_version"],
+                "new_active_version": reload_result["new_active_version"],
+                "preserved_active": reload_result["preserved_active"],
+                "active_model_name": reloaded_active_model["model_name"],
+                "active_model_version": reloaded_active_model["model_version"],
+            }
+        except Exception as e:
+            log_message(f"Model reload failed error={str(e)}")
+            return "HTTP/1.1 500 Internal Server Error", {
+                "error": "Model reload failed",
+                "details": str(e),
+            }
+
     elif method == "POST" and path == "/predict":
         with metrics_lock:
             metrics["prediction_requests"] += 1
@@ -323,15 +450,7 @@ def handle_route(method, path, body_text, client_address):
                 }
 
             features = body_data["features"]
-
-            if not isinstance(features, list):
-                with metrics_lock:
-                    metrics["prediction_errors"] += 1
-                return "HTTP/1.1 400 Bad Request", {
-                    "error": "'features' must be a list"
-                }
-
-            prediction, model_used = predict(features)
+            prediction, model_used = predict_one(features)
 
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -359,10 +478,11 @@ def handle_route(method, path, body_text, client_address):
             with metrics_lock:
                 metrics["prediction_errors"] += 1
 
+            current_model = get_active_model()
             log_message(
                 f"POST /predict from {client_address[0]} "
-                f"model={active_model['model_name']} "
-                f"version={active_model['model_version']} "
+                f"model={current_model['model_name']} "
+                f"version={current_model['model_version']} "
                 f"error=Invalid JSON body"
             )
 
@@ -374,10 +494,86 @@ def handle_route(method, path, body_text, client_address):
             with metrics_lock:
                 metrics["prediction_errors"] += 1
 
+            current_model = get_active_model()
             log_message(
                 f"POST /predict from {client_address[0]} "
-                f"model={active_model['model_name']} "
-                f"version={active_model['model_version']} "
+                f"model={current_model['model_name']} "
+                f"version={current_model['model_version']} "
+                f"error={str(e)}"
+            )
+
+            return "HTTP/1.1 400 Bad Request", {
+                "error": str(e)
+            }
+
+    elif method == "POST" and path == "/predict-batch":
+        with metrics_lock:
+            metrics["batch_prediction_requests"] += 1
+
+        start_time = time.perf_counter()
+
+        try:
+            body_data = json.loads(body_text)
+
+            if "instances" not in body_data:
+                with metrics_lock:
+                    metrics["batch_prediction_errors"] += 1
+                return "HTTP/1.1 400 Bad Request", {
+                    "error": "Missing 'instances'"
+                }
+
+            instances = body_data["instances"]
+            predictions, model_used = predict_batch(instances)
+
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+
+            with metrics_lock:
+                metrics["batch_prediction_successes"] += 1
+                metrics["total_batch_prediction_latency_ms"] += elapsed_ms
+                metrics["total_batch_instances"] += len(instances)
+
+            log_message(
+                f"POST /predict-batch from {client_address[0]} "
+                f"model={model_used['model_name']} "
+                f"version={model_used['model_version']} "
+                f"batch_size={len(instances)} "
+                f"predictions={predictions} "
+                f"latency_ms={elapsed_ms:.4f}"
+            )
+
+            return "HTTP/1.1 200 OK", {
+                "predictions": predictions,
+                "count": len(predictions),
+                "latency_ms": round(elapsed_ms, 4),
+                "model_name": model_used["model_name"],
+                "model_version": model_used["model_version"],
+            }
+
+        except json.JSONDecodeError:
+            with metrics_lock:
+                metrics["batch_prediction_errors"] += 1
+
+            current_model = get_active_model()
+            log_message(
+                f"POST /predict-batch from {client_address[0]} "
+                f"model={current_model['model_name']} "
+                f"version={current_model['model_version']} "
+                f"error=Invalid JSON body"
+            )
+
+            return "HTTP/1.1 400 Bad Request", {
+                "error": "Invalid JSON"
+            }
+
+        except ValueError as e:
+            with metrics_lock:
+                metrics["batch_prediction_errors"] += 1
+
+            current_model = get_active_model()
+            log_message(
+                f"POST /predict-batch from {client_address[0]} "
+                f"model={current_model['model_name']} "
+                f"version={current_model['model_version']} "
                 f"error={str(e)}"
             )
 

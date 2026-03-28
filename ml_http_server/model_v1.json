@@ -1,7 +1,21 @@
 {
   "model_name": "linear_regression_demo",
   "model_version": "v1.0.0",
-  "trained_at": "2026-03-28T12:00:00",
-  "bias": 1.5,
-  "weights": [2.0, 1.0]
+  "trained_at": "2026-03-28T20:05:34.460249+00:00",
+  "bias": 1.3742361362946025,
+  "weights": [
+    2.0213120412826653,
+    0.9998916363970072
+  ],
+  "training_summary": {
+    "train_size": 160,
+    "eval_size": 40,
+    "num_features": 2
+  },
+  "evaluation_metrics": {
+    "mse": 0.2758078868680053,
+    "rmse": 0.5251741490858106,
+    "mae": 0.4273204409139728,
+    "r2": 0.992207931249467
+  }
 }
