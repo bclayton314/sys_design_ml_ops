@@ -1,12 +1,10 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-import os
 
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = Path(SCRIPT_DIR) / "logs"
-OFFSET_DIR = Path(SCRIPT_DIR) / "offsets"
+LOG_DIR = Path("logs")
+OFFSET_DIR = Path("offsets")
 
 
 # ------------------------
@@ -15,6 +13,17 @@ OFFSET_DIR = Path(SCRIPT_DIR) / "offsets"
 def ensure_dirs_exist() -> None:
     LOG_DIR.mkdir(exist_ok=True)
     OFFSET_DIR.mkdir(exist_ok=True)
+
+
+def reset_demo_state() -> None:
+    """
+    Remove existing demo log and offset files so each run starts clean.
+    """
+    for path in LOG_DIR.glob("*.log"):
+        path.unlink(missing_ok=True)
+
+    for path in OFFSET_DIR.glob("*.json"):
+        path.unlink(missing_ok=True)
 
 
 def get_log_path(topic: str) -> Path:
@@ -76,16 +85,35 @@ def read_events_from_offset(topic: str, start_offset: int) -> list[dict]:
 # Offset storage
 # ------------------------
 def load_consumer_offsets(consumer_name: str) -> dict:
+    """
+    Load offsets for a consumer. If the file is missing or empty, return {}.
+    If the file contains invalid JSON, raise a clearer error.
+    """
     offset_path = get_offset_path(consumer_name)
 
     if not offset_path.exists():
         return {}
 
-    with offset_path.open("r", encoding="utf-8") as f:
-        content = f.read().strip()
-        if not content:
+    try:
+        with offset_path.open("r", encoding="utf-8") as f:
+            raw_text = f.read().strip()
+
+        if not raw_text:
             return {}
-        return json.loads(content)
+
+        offsets = json.loads(raw_text)
+
+        if not isinstance(offsets, dict):
+            raise ValueError(
+                f"Offset file for consumer '{consumer_name}' must contain a JSON object"
+            )
+
+        return offsets
+
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Offset file for consumer '{consumer_name}' is not valid JSON: {offset_path}"
+        ) from e
 
 
 def save_consumer_offsets(consumer_name: str, offsets: dict) -> None:
@@ -118,6 +146,20 @@ def consume_new_events(consumer_name: str, topic: str) -> list[dict]:
         set_consumer_offset(consumer_name, topic, next_offset)
 
     return new_events
+
+
+def describe_consumer(consumer_name: str, topic: str) -> dict:
+    current_offset = get_consumer_offset(consumer_name, topic)
+    total_events = len(read_events(topic))
+    lag = max(total_events - current_offset, 0)
+
+    return {
+        "consumer": consumer_name,
+        "topic": topic,
+        "current_offset": current_offset,
+        "total_events": total_events,
+        "lag": lag,
+    }
 
 
 # ------------------------
@@ -175,19 +217,37 @@ def replay_events(events: list[dict]) -> dict:
 
 
 # ------------------------
+# Demo helpers
+# ------------------------
+def print_consumer_status(consumer_name: str, topic: str) -> None:
+    status = describe_consumer(consumer_name, topic)
+    print(
+        f"consumer={status['consumer']} "
+        f"topic={status['topic']} "
+        f"offset={status['current_offset']} "
+        f"total_events={status['total_events']} "
+        f"lag={status['lag']}"
+    )
+
+
+def print_batch(title: str, events: list[dict]) -> None:
+    print(title)
+    if not events:
+        print("  []")
+        return
+
+    for event in events:
+        print(f"  {event}")
+
+
+# ------------------------
 # Demo
 # ------------------------
 def main():
     ensure_dirs_exist()
+    reset_demo_state()
 
-    append_event(
-        "users",
-        build_event(
-            "user_signup",
-            {"user_id": 123, "email": "user@example.com"},
-        ),
-    )
-
+    # Seed the orders topic
     append_event(
         "orders",
         build_event(
@@ -204,36 +264,65 @@ def main():
         ),
     )
 
-    consumer_name = "analytics"
-
-    print("First consume from orders:")
-    batch_1 = consume_new_events(consumer_name, "orders")
-    for event in batch_1:
-        print(event)
-
-    print("\nConsumer offsets after first consume:")
-    print(load_consumer_offsets(consumer_name))
-
-    print("\nSecond consume from orders (should be empty if nothing new):")
-    batch_2 = consume_new_events(consumer_name, "orders")
-    print(batch_2)
-
-    print("\nAppend one more order event...")
     append_event(
         "orders",
         build_event(
             "order_created",
-            {"order_id": 999, "user_id": 123, "amount": 50.00},
+            {"order_id": 999, "user_id": 456, "amount": 50.00},
         ),
     )
 
-    print("\nThird consume from orders (should only get the new event):")
-    batch_3 = consume_new_events(consumer_name, "orders")
-    for event in batch_3:
-        print(event)
+    consumers = ["analytics", "email_service", "ml_features"]
+    topic = "orders"
 
-    print("\nFinal consumer offsets:")
-    print(load_consumer_offsets(consumer_name))
+    print("\nInitial consumer status:")
+    for consumer in consumers:
+        print_consumer_status(consumer, topic)
+
+    # analytics consumes everything
+    analytics_batch = consume_new_events("analytics", topic)
+    print_batch("\nanalytics consumes:", analytics_batch)
+
+    print("\nStatus after analytics consumes:")
+    for consumer in consumers:
+        print_consumer_status(consumer, topic)
+
+    # email_service consumes everything
+    email_batch = consume_new_events("email_service", topic)
+    print_batch("\nemail_service consumes:", email_batch)
+
+    print("\nStatus after email_service consumes:")
+    for consumer in consumers:
+        print_consumer_status(consumer, topic)
+
+    # append another event
+    append_event(
+        "orders",
+        build_event(
+            "order_created",
+            {"order_id": 1111, "user_id": 123, "amount": 75.00},
+        ),
+    )
+
+    print("\nStatus after appending one more order:")
+    for consumer in consumers:
+        print_consumer_status(consumer, topic)
+
+    # analytics consumes only the new event
+    analytics_batch_2 = consume_new_events("analytics", topic)
+    print_batch("\nanalytics consumes again:", analytics_batch_2)
+
+    # ml_features consumes for the first time, so it sees everything
+    ml_batch = consume_new_events("ml_features", topic)
+    print_batch("\nml_features consumes for the first time:", ml_batch)
+
+    print("\nFinal consumer status:")
+    for consumer in consumers:
+        print_consumer_status(consumer, topic)
+
+    print("\nFinal offset files:")
+    for consumer in consumers:
+        print(f"{consumer}: {load_consumer_offsets(consumer)}")
 
 
 if __name__ == "__main__":
