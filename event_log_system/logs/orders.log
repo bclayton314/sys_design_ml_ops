@@ -1,4 +1,0 @@
-{"event_type": "order_created", "timestamp": "2026-04-01T19:49:00.102160+00:00", "payload": {"order_id": 456, "user_id": 123, "amount": 29.99}}
-{"event_type": "order_created", "timestamp": "2026-04-01T19:49:00.102160+00:00", "payload": {"order_id": 789, "user_id": 123, "amount": 10.0}}
-{"event_type": "order_created", "timestamp": "2026-04-01T19:49:00.103171+00:00", "payload": {"order_id": 999, "user_id": 456, "amount": 50.0}}
-{"event_type": "order_created", "timestamp": "2026-04-01T19:49:00.115350+00:00", "payload": {"order_id": 1111, "user_id": 123, "amount": 75.0}}

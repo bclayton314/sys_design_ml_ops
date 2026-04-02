@@ -1,10 +1,15 @@
 import json
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 
 
-LOG_DIR = Path("logs")
-OFFSET_DIR = Path("offsets")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = Path(SCRIPT_DIR) / "logs"
+OFFSET_DIR = Path(SCRIPT_DIR) / "offsets"
+
+NUM_PARTITIONS = 3
 
 
 # ------------------------
@@ -16,9 +21,6 @@ def ensure_dirs_exist() -> None:
 
 
 def reset_demo_state() -> None:
-    """
-    Remove existing demo log and offset files so each run starts clean.
-    """
     for path in LOG_DIR.glob("*.log"):
         path.unlink(missing_ok=True)
 
@@ -26,30 +28,46 @@ def reset_demo_state() -> None:
         path.unlink(missing_ok=True)
 
 
-def get_log_path(topic: str) -> Path:
-    return LOG_DIR / f"{topic}.log"
+# ------------------------
+# Partitioning
+# ------------------------
+def get_partition(topic: str, key: str) -> int:
+    """
+    Deterministically assign a key to a partition.
+    """
+    key_bytes = key.encode("utf-8")
+    hash_val = int(hashlib.md5(key_bytes).hexdigest(), 16)
+    return hash_val % NUM_PARTITIONS
 
 
-def get_offset_path(consumer_name: str) -> Path:
-    return OFFSET_DIR / f"{consumer_name}.json"
+def get_log_path(topic: str, partition: int) -> Path:
+    return LOG_DIR / f"{topic}_{partition}.log"
 
 
 # ------------------------
 # Event writing
 # ------------------------
-def append_event(topic: str, event: dict) -> None:
-    log_path = get_log_path(topic)
+def append_event(topic: str, key: str, event: dict) -> int:
+    partition = get_partition(topic, key)
+    log_path = get_log_path(topic, partition)
+
+    record = {
+        **event,
+        "_partition": partition,
+        "_key": key,
+    }
 
     with log_path.open("a", encoding="utf-8") as f:
-        json_record = json.dumps(event)
-        f.write(json_record + "\n")
+        f.write(json.dumps(record) + "\n")
+
+    return partition
 
 
 # ------------------------
 # Event reading
 # ------------------------
-def read_events(topic: str) -> list[dict]:
-    log_path = get_log_path(topic)
+def read_partition(topic: str, partition: int) -> list[dict]:
+    log_path = get_log_path(topic, partition)
 
     if not log_path.exists():
         return []
@@ -57,113 +75,102 @@ def read_events(topic: str) -> list[dict]:
     events = []
 
     with log_path.open("r", encoding="utf-8") as f:
-        for line_number, line in enumerate(f, start=0):
+        for offset, line in enumerate(f):
             line = line.strip()
-
             if not line:
                 continue
 
             try:
                 event = json.loads(line)
-                event["_offset"] = line_number
-                event["_topic"] = topic
-                events.append(event)
             except json.JSONDecodeError as e:
                 raise ValueError(
-                    f"{topic}: invalid JSON on line {line_number + 1}: {e}"
+                    f"{topic} partition {partition}: invalid JSON at line {offset + 1}: {e}"
                 ) from e
+
+            event["_offset"] = offset
+            events.append(event)
 
     return events
 
 
-def read_events_from_offset(topic: str, start_offset: int) -> list[dict]:
-    all_events = read_events(topic)
-    return [event for event in all_events if event["_offset"] >= start_offset]
-
-
 # ------------------------
-# Offset storage
+# Offset handling
 # ------------------------
-def load_consumer_offsets(consumer_name: str) -> dict:
-    """
-    Load offsets for a consumer. If the file is missing or empty, return {}.
-    If the file contains invalid JSON, raise a clearer error.
-    """
-    offset_path = get_offset_path(consumer_name)
+def get_offset_path(consumer: str) -> Path:
+    return OFFSET_DIR / f"{consumer}.json"
 
-    if not offset_path.exists():
+
+def load_offsets(consumer: str) -> dict:
+    path = get_offset_path(consumer)
+
+    if not path.exists():
+        return {}
+
+    raw_text = path.read_text(encoding="utf-8").strip()
+    if not raw_text:
         return {}
 
     try:
-        with offset_path.open("r", encoding="utf-8") as f:
-            raw_text = f.read().strip()
-
-        if not raw_text:
-            return {}
-
         offsets = json.loads(raw_text)
-
-        if not isinstance(offsets, dict):
-            raise ValueError(
-                f"Offset file for consumer '{consumer_name}' must contain a JSON object"
-            )
-
-        return offsets
-
     except json.JSONDecodeError as e:
         raise ValueError(
-            f"Offset file for consumer '{consumer_name}' is not valid JSON: {offset_path}"
+            f"Offset file for consumer '{consumer}' is not valid JSON: {path}"
         ) from e
 
+    if not isinstance(offsets, dict):
+        raise ValueError(
+            f"Offset file for consumer '{consumer}' must contain a JSON object"
+        )
 
-def save_consumer_offsets(consumer_name: str, offsets: dict) -> None:
-    offset_path = get_offset_path(consumer_name)
-
-    with offset_path.open("w", encoding="utf-8") as f:
-        json.dump(offsets, f, indent=2)
-
-
-def get_consumer_offset(consumer_name: str, topic: str) -> int:
-    offsets = load_consumer_offsets(consumer_name)
-    return offsets.get(topic, 0)
+    return offsets
 
 
-def set_consumer_offset(consumer_name: str, topic: str, offset: int) -> None:
-    offsets = load_consumer_offsets(consumer_name)
-    offsets[topic] = offset
-    save_consumer_offsets(consumer_name, offsets)
+def save_offsets(consumer: str, offsets: dict) -> None:
+    path = get_offset_path(consumer)
+    path.write_text(json.dumps(offsets, indent=2), encoding="utf-8")
 
 
-# ------------------------
-# Consumer API
-# ------------------------
-def consume_new_events(consumer_name: str, topic: str) -> list[dict]:
-    start_offset = get_consumer_offset(consumer_name, topic)
-    new_events = read_events_from_offset(topic, start_offset)
-
-    if new_events:
-        next_offset = max(event["_offset"] for event in new_events) + 1
-        set_consumer_offset(consumer_name, topic, next_offset)
-
-    return new_events
+def get_offset(consumer: str, topic: str, partition: int) -> int:
+    offsets = load_offsets(consumer)
+    return offsets.get(topic, {}).get(str(partition), 0)
 
 
-def describe_consumer(consumer_name: str, topic: str) -> dict:
-    current_offset = get_consumer_offset(consumer_name, topic)
-    total_events = len(read_events(topic))
-    lag = max(total_events - current_offset, 0)
+def set_offset(consumer: str, topic: str, partition: int, offset: int) -> None:
+    offsets = load_offsets(consumer)
 
-    return {
-        "consumer": consumer_name,
-        "topic": topic,
-        "current_offset": current_offset,
-        "total_events": total_events,
-        "lag": lag,
-    }
+    if topic not in offsets:
+        offsets[topic] = {}
+
+    offsets[topic][str(partition)] = offset
+    save_offsets(consumer, offsets)
 
 
 # ------------------------
-# Event creation
+# Batch consumption
+# ------------------------
+def consume_batch(consumer: str, topic: str, batch_size: int) -> list[dict]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be a positive integer")
+
+    results = []
+
+    for partition in range(NUM_PARTITIONS):
+        start_offset = get_offset(consumer, topic, partition)
+        events = read_partition(topic, partition)
+
+        batch = [e for e in events if e["_offset"] >= start_offset][:batch_size]
+
+        if batch:
+            next_offset = batch[-1]["_offset"] + 1
+            set_offset(consumer, topic, partition, next_offset)
+
+        results.extend(batch)
+
+    return results
+
+
+# ------------------------
+# Helpers
 # ------------------------
 def build_event(event_type: str, payload: dict) -> dict:
     return {
@@ -173,156 +180,66 @@ def build_event(event_type: str, payload: dict) -> dict:
     }
 
 
-# ------------------------
-# Replay logic
-# ------------------------
-def replay_events(events: list[dict]) -> dict:
-    state = {
-        "users": {},
-        "orders": {},
-        "order_count_by_user": {},
-        "signup_count": 0,
-        "total_order_amount": 0.0,
-    }
+def describe_consumer(consumer: str, topic: str) -> None:
+    offsets = load_offsets(consumer)
 
-    for event in events:
-        event_type = event["event_type"]
-        payload = event["payload"]
+    print(f"\nConsumer: {consumer}")
+    for partition in range(NUM_PARTITIONS):
+        current = offsets.get(topic, {}).get(str(partition), 0)
+        total = len(read_partition(topic, partition))
+        lag = total - current
 
-        if event_type == "user_signup":
-            user_id = payload["user_id"]
-            email = payload["email"]
-
-            state["users"][user_id] = {"email": email}
-            state["signup_count"] += 1
-
-        elif event_type == "order_created":
-            order_id = payload["order_id"]
-            user_id = payload["user_id"]
-            amount = payload["amount"]
-
-            state["orders"][order_id] = {
-                "user_id": user_id,
-                "amount": amount,
-            }
-
-            state["order_count_by_user"].setdefault(user_id, 0)
-            state["order_count_by_user"][user_id] += 1
-            state["total_order_amount"] += amount
-
-        else:
-            print(f"Skipping unknown event type: {event_type}")
-
-    return state
-
-
-# ------------------------
-# Demo helpers
-# ------------------------
-def print_consumer_status(consumer_name: str, topic: str) -> None:
-    status = describe_consumer(consumer_name, topic)
-    print(
-        f"consumer={status['consumer']} "
-        f"topic={status['topic']} "
-        f"offset={status['current_offset']} "
-        f"total_events={status['total_events']} "
-        f"lag={status['lag']}"
-    )
-
-
-def print_batch(title: str, events: list[dict]) -> None:
-    print(title)
-    if not events:
-        print("  []")
-        return
-
-    for event in events:
-        print(f"  {event}")
+        print(
+            f"  partition={partition} "
+            f"offset={current} "
+            f"total={total} "
+            f"lag={lag}"
+        )
 
 
 # ------------------------
 # Demo
 # ------------------------
-def main():
+def main() -> None:
     ensure_dirs_exist()
     reset_demo_state()
 
-    # Seed the orders topic
-    append_event(
-        "orders",
-        build_event(
-            "order_created",
-            {"order_id": 456, "user_id": 123, "amount": 29.99},
-        ),
-    )
-
-    append_event(
-        "orders",
-        build_event(
-            "order_created",
-            {"order_id": 789, "user_id": 123, "amount": 10.00},
-        ),
-    )
-
-    append_event(
-        "orders",
-        build_event(
-            "order_created",
-            {"order_id": 999, "user_id": 456, "amount": 50.00},
-        ),
-    )
-
-    consumers = ["analytics", "email_service", "ml_features"]
     topic = "orders"
+    consumer = "analytics"
 
-    print("\nInitial consumer status:")
-    for consumer in consumers:
-        print_consumer_status(consumer, topic)
+    orders = [
+        {"order_id": 1, "user_id": "A", "amount": 10},
+        {"order_id": 2, "user_id": "B", "amount": 20},
+        {"order_id": 3, "user_id": "C", "amount": 30},
+        {"order_id": 4, "user_id": "A", "amount": 40},
+        {"order_id": 5, "user_id": "B", "amount": 50},
+        {"order_id": 6, "user_id": "C", "amount": 60},
+    ]
 
-    # analytics consumes everything
-    analytics_batch = consume_new_events("analytics", topic)
-    print_batch("\nanalytics consumes:", analytics_batch)
+    print("\nProducing events:")
+    for order in orders:
+        partition = append_event(
+            topic=topic,
+            key=order["user_id"],
+            event=build_event("order_created", order),
+        )
+        print(f"order_id={order['order_id']} -> partition {partition}")
 
-    print("\nStatus after analytics consumes:")
-    for consumer in consumers:
-        print_consumer_status(consumer, topic)
+    describe_consumer(consumer, topic)
 
-    # email_service consumes everything
-    email_batch = consume_new_events("email_service", topic)
-    print_batch("\nemail_service consumes:", email_batch)
+    print("\nFirst batch consume:")
+    batch1 = consume_batch(consumer, topic, batch_size=2)
+    for event in batch1:
+        print(event)
 
-    print("\nStatus after email_service consumes:")
-    for consumer in consumers:
-        print_consumer_status(consumer, topic)
+    describe_consumer(consumer, topic)
 
-    # append another event
-    append_event(
-        "orders",
-        build_event(
-            "order_created",
-            {"order_id": 1111, "user_id": 123, "amount": 75.00},
-        ),
-    )
+    print("\nSecond batch consume:")
+    batch2 = consume_batch(consumer, topic, batch_size=2)
+    for event in batch2:
+        print(event)
 
-    print("\nStatus after appending one more order:")
-    for consumer in consumers:
-        print_consumer_status(consumer, topic)
-
-    # analytics consumes only the new event
-    analytics_batch_2 = consume_new_events("analytics", topic)
-    print_batch("\nanalytics consumes again:", analytics_batch_2)
-
-    # ml_features consumes for the first time, so it sees everything
-    ml_batch = consume_new_events("ml_features", topic)
-    print_batch("\nml_features consumes for the first time:", ml_batch)
-
-    print("\nFinal consumer status:")
-    for consumer in consumers:
-        print_consumer_status(consumer, topic)
-
-    print("\nFinal offset files:")
-    for consumer in consumers:
-        print(f"{consumer}: {load_consumer_offsets(consumer)}")
+    describe_consumer(consumer, topic)
 
 
 if __name__ == "__main__":
