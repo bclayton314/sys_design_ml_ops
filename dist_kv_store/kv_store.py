@@ -1,41 +1,80 @@
 import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 import os
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WAL_PATH = Path(SCRIPT_DIR) / "kv_store.wal"
+SNAPSHOT_PATH = Path(SCRIPT_DIR) / "kv_store.snapshot.json"
+
+HOST = "127.0.0.1"
+PORT = 8080
 
 
 class KeyValueStore:
-    def __init__(self, wal_path: Path) -> None:
+    def __init__(self, wal_path: Path, snapshot_path: Path) -> None:
         """
-        Initialize an in-memory key-value store and recover state from WAL.
+        Initialize the store and recover state from snapshot + WAL tail.
         """
         self.store: dict[str, str] = {}
         self.wal_path = wal_path
+        self.snapshot_path = snapshot_path
 
-        # Ensure the WAL file exists.
         self.wal_path.touch(exist_ok=True)
-
-        # Recover in-memory state from WAL.
-        self.replay_wal()
+        self.recover()
 
     def append_to_wal(self, record: dict) -> None:
-        """
-        Append one operation record to the write-ahead log.
-        """
         with self.wal_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
 
-    def replay_wal(self) -> None:
-        """
-        Rebuild in-memory state by replaying WAL records in order.
-        """
+    def count_wal_lines(self) -> int:
+        count = 0
+        with self.wal_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    count += 1
+        return count
+
+    def load_snapshot(self) -> tuple[dict[str, str], int]:
+        if not self.snapshot_path.exists():
+            return {}, 0
+
+        raw_text = self.snapshot_path.read_text(encoding="utf-8").strip()
+        if not raw_text:
+            return {}, 0
+
+        try:
+            snapshot_data = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Invalid JSON in snapshot file {self.snapshot_path}: {e}"
+            ) from e
+
+        if not isinstance(snapshot_data, dict):
+            raise ValueError(
+                f"Snapshot file must contain a JSON object: {self.snapshot_path}"
+            )
+
+        store_data = snapshot_data.get("store", {})
+        last_wal_line = snapshot_data.get("last_wal_line", 0)
+
+        if not isinstance(store_data, dict):
+            raise ValueError("Snapshot field 'store' must be a JSON object.")
+
+        if not isinstance(last_wal_line, int) or last_wal_line < 0:
+            raise ValueError("Snapshot field 'last_wal_line' must be a non-negative integer.")
+
+        return store_data, last_wal_line
+
+    def replay_wal_from_line(self, start_line: int) -> None:
         with self.wal_path.open("r", encoding="utf-8") as f:
             for line_number, line in enumerate(f, start=1):
-                line = line.strip()
+                if line_number <= start_line:
+                    continue
 
+                line = line.strip()
                 if not line:
                     continue
 
@@ -69,10 +108,43 @@ class KeyValueStore:
                         f"Unknown WAL operation at line {line_number}: {record}"
                     )
 
+    def recover(self) -> None:
+        snapshot_store, last_wal_line = self.load_snapshot()
+        self.store = dict(snapshot_store)
+        self.replay_wal_from_line(last_wal_line)
+
+    def create_snapshot(self) -> None:
+        snapshot_record = {
+            "store": dict(self.store),
+            "last_wal_line": self.count_wal_lines(),
+        }
+
+        with self.snapshot_path.open("w", encoding="utf-8") as f:
+            json.dump(snapshot_record, f, indent=2)
+
+    def load_snapshot_contents(self) -> dict | None:
+        if not self.snapshot_path.exists():
+            return None
+
+        raw_text = self.snapshot_path.read_text(encoding="utf-8").strip()
+        if not raw_text:
+            return None
+
+        try:
+            snapshot_data = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Invalid JSON in snapshot file {self.snapshot_path}: {e}"
+            ) from e
+
+        if not isinstance(snapshot_data, dict):
+            raise ValueError(
+                f"Snapshot file must contain a JSON object: {self.snapshot_path}"
+            )
+
+        return snapshot_data
+
     def put(self, key: str, value: str) -> None:
-        """
-        Log the PUT operation, then apply it to memory.
-        """
         record = {
             "op": "PUT",
             "key": key,
@@ -82,17 +154,9 @@ class KeyValueStore:
         self.store[key] = value
 
     def get(self, key: str) -> str | None:
-        """
-        Return the value for a key, or None if the key does not exist.
-        """
         return self.store.get(key)
 
     def delete(self, key: str) -> bool:
-        """
-        Log the DELETE operation if the key exists,
-        then remove it from memory.
-        Returns True if deleted, False otherwise.
-        """
         if key in self.store:
             record = {
                 "op": "DELETE",
@@ -101,106 +165,143 @@ class KeyValueStore:
             self.append_to_wal(record)
             del self.store[key]
             return True
-
         return False
 
     def show_all(self) -> dict[str, str]:
-        """
-        Return a shallow copy of all key-value pairs.
-        """
         return dict(self.store)
 
 
-def print_help() -> None:
-    print("\nAvailable commands:")
-    print("  PUT <key> <value>")
-    print("  GET <key>")
-    print("  DELETE <key>")
-    print("  SHOW")
-    print("  HELP")
-    print("  EXIT\n")
+kv_store = KeyValueStore(WAL_PATH, SNAPSHOT_PATH)
 
 
-def run_repl() -> None:
-    kv = KeyValueStore(WAL_PATH)
+class KVRequestHandler(BaseHTTPRequestHandler):
+    def _send_json(self, status_code: int, payload: dict) -> None:
+        response_body = json.dumps(payload).encode("utf-8")
 
-    print("Simple Redis-lite KV Store with WAL Recovery")
-    print(f"WAL file: {WAL_PATH}")
-    print("Type HELP for available commands.")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response_body)))
+        self.end_headers()
+        self.wfile.write(response_body)
 
-    while True:
+    def _read_json_body(self) -> dict:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length).decode("utf-8")
+
+        if not body:
+            return {}
+
         try:
-            raw_command = input("kv> ").strip()
-        except EOFError:
-            print("\nExiting.")
-            break
-        except KeyboardInterrupt:
-            print("\nExiting.")
-            break
+            data = json.loads(body)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON body: {e}") from e
 
-        if not raw_command:
-            continue
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object.")
 
-        parts = raw_command.split(maxsplit=2)
-        command = parts[0].upper()
+        return data
 
-        if command == "PUT":
-            if len(parts) < 3:
-                print("Error: PUT requires a key and a value.")
-                continue
+    def _extract_key_from_path(self) -> str | None:
+        parsed = urlparse(self.path)
+        path_parts = parsed.path.strip("/").split("/")
 
-            key = parts[1]
-            value = parts[2]
-            kv.put(key, value)
-            print(f"OK: stored key '{key}'")
+        if len(path_parts) == 2 and path_parts[0] == "kv":
+            return path_parts[1]
 
-        elif command == "GET":
-            if len(parts) != 2:
-                print("Error: GET requires exactly one key.")
-                continue
+        return None
 
-            key = parts[1]
-            value = kv.get(key)
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
 
+        if parsed.path == "/kv":
+            self._send_json(200, {"store": kv_store.show_all()})
+            return
+
+        if parsed.path == "/snapshot":
+            snapshot = kv_store.load_snapshot_contents()
+            if snapshot is None:
+                self._send_json(404, {"error": "No snapshot found"})
+            else:
+                self._send_json(200, {"snapshot": snapshot})
+            return
+
+        key = self._extract_key_from_path()
+        if key is not None:
+            value = kv_store.get(key)
             if value is None:
-                print(f"NOT FOUND: '{key}'")
+                self._send_json(404, {"error": f"Key '{key}' not found"})
             else:
-                print(value)
+                self._send_json(200, {"key": key, "value": value})
+            return
 
-        elif command == "DELETE":
-            if len(parts) != 2:
-                print("Error: DELETE requires exactly one key.")
-                continue
+        self._send_json(404, {"error": "Route not found"})
 
-            key = parts[1]
-            deleted = kv.delete(key)
+    def do_PUT(self) -> None:
+        key = self._extract_key_from_path()
+        if key is None:
+            self._send_json(404, {"error": "Route not found"})
+            return
 
-            if deleted:
-                print(f"OK: deleted key '{key}'")
-            else:
-                print(f"NOT FOUND: '{key}'")
+        try:
+            body = self._read_json_body()
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+            return
 
-        elif command == "SHOW":
-            if len(parts) != 1:
-                print("Error: SHOW does not take arguments.")
-                continue
+        if "value" not in body:
+            self._send_json(400, {"error": "Missing 'value' in request body"})
+            return
 
-            current = kv.show_all()
-            if not current:
-                print("{}")
-            else:
-                print(current)
+        value = body["value"]
 
-        elif command == "HELP":
-            print_help()
+        if not isinstance(value, str):
+            self._send_json(400, {"error": "'value' must be a string"})
+            return
 
-        elif command == "EXIT":
-            print("Exiting.")
-            break
+        kv_store.put(key, value)
+        self._send_json(200, {"message": "stored", "key": key, "value": value})
 
+    def do_DELETE(self) -> None:
+        key = self._extract_key_from_path()
+        if key is None:
+            self._send_json(404, {"error": "Route not found"})
+            return
+
+        deleted = kv_store.delete(key)
+        if deleted:
+            self._send_json(200, {"message": "deleted", "key": key})
         else:
-            print(f"Error: unknown command '{command}'. Type HELP for help.")
+            self._send_json(404, {"error": f"Key '{key}' not found"})
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+
+        if parsed.path == "/snapshot":
+            kv_store.create_snapshot()
+            self._send_json(200, {"message": "snapshot created"})
+            return
+
+        self._send_json(404, {"error": "Route not found"})
+
+    def log_message(self, format: str, *args) -> None:
+        """
+        Keep the default server logging minimal and readable.
+        """
+        print(f"{self.command} {self.path} - {format % args}")
+
+
+def run_server() -> None:
+    server = HTTPServer((HOST, PORT), KVRequestHandler)
+    print(f"KV store HTTP server running at http://{HOST}:{PORT}")
+    print("Routes:")
+    print("  GET    /kv")
+    print("  GET    /kv/<key>")
+    print("  PUT    /kv/<key>")
+    print("  DELETE /kv/<key>")
+    print("  POST   /snapshot")
+    print("  GET    /snapshot")
+    server.serve_forever()
 
 
 if __name__ == "__main__":
-    run_repl()
+    run_server()

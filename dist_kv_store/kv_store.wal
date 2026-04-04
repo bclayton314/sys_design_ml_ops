@@ -1,1 +1,10 @@
 
+{"op": "PUT", "key": "name", "value": "Clayton"}
+{"op": "PUT", "key": "role", "value": "SW Engineer"}
+{"op": "PUT", "key": "city", "value": "Dallas"}
+{"op": "DELETE", "key": "city"}
+{"op": "PUT", "key": "goal", "value": "ML Engineer"}
+{"op": "DELETE", "key": "role"}
+{"op": "DELETE", "key": "goal"}
+{"op": "PUT", "key": "role", "value": "SW Engineer"}
+{"op": "PUT", "key": "name", "value": "Clayton"}
