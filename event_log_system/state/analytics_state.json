@@ -1,0 +1,22 @@
+{
+  "order_count_by_user": {
+    "A": 2,
+    "B": 1,
+    "C": 1
+  },
+  "total_amount_by_user": {
+    "A": 40.0,
+    "B": 20.0,
+    "C": 15.0
+  },
+  "total_orders": 4,
+  "total_revenue": 75.0,
+  "processed_event_ids": [
+    "1:0",
+    "1:1",
+    "1:2",
+    "1:3"
+  ],
+  "_last_batch_applied": 2,
+  "_last_batch_skipped": 0
+}

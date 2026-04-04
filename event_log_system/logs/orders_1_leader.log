@@ -1,6 +1,6 @@
-{"event_type": "order_created", "timestamp": "2026-04-04T14:18:25.829957+00:00", "payload": {"order_id": 1, "user_id": "A", "amount": 10}, "_partition": 1, "_key": "A"}
-{"event_type": "order_created", "timestamp": "2026-04-04T14:18:25.831001+00:00", "payload": {"order_id": 2, "user_id": "B", "amount": 20}, "_partition": 1, "_key": "B"}
-{"event_type": "order_created", "timestamp": "2026-04-04T14:18:25.832055+00:00", "payload": {"order_id": 3, "user_id": "C", "amount": 30}, "_partition": 1, "_key": "C"}
-{"event_type": "order_created", "timestamp": "2026-04-04T14:18:25.834054+00:00", "payload": {"order_id": 4, "user_id": "A", "amount": 40}, "_partition": 1, "_key": "A"}
-{"event_type": "order_created", "timestamp": "2026-04-04T14:18:25.835061+00:00", "payload": {"order_id": 5, "user_id": "B", "amount": 50}, "_partition": 1, "_key": "B"}
-{"event_type": "order_created", "timestamp": "2026-04-04T14:18:25.836927+00:00", "payload": {"order_id": 6, "user_id": "C", "amount": 60}, "_partition": 1, "_key": "C"}
+{"event_type": "order_created", "timestamp": "2026-04-04T16:17:57.872307+00:00", "payload": {"order_id": 1, "user_id": "A", "amount": 10.0}, "_partition": 1, "_key": "A"}
+{"event_type": "order_created", "timestamp": "2026-04-04T16:17:57.873860+00:00", "payload": {"order_id": 2, "user_id": "B", "amount": 20.0}, "_partition": 1, "_key": "B"}
+{"event_type": "order_created", "timestamp": "2026-04-04T16:17:57.874696+00:00", "payload": {"order_id": 3, "user_id": "A", "amount": 30.0}, "_partition": 1, "_key": "A"}
+{"event_type": "order_created", "timestamp": "2026-04-04T16:17:57.875696+00:00", "payload": {"order_id": 4, "user_id": "C", "amount": 15.0}, "_partition": 1, "_key": "C"}
+{"event_type": "order_created", "timestamp": "2026-04-04T16:17:57.876694+00:00", "payload": {"order_id": 5, "user_id": "B", "amount": 25.0}, "_partition": 1, "_key": "B"}
+{"event_type": "order_created", "timestamp": "2026-04-04T16:17:57.878222+00:00", "payload": {"order_id": 6, "user_id": "A", "amount": 5.0}, "_partition": 1, "_key": "A"}
