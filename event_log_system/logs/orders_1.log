@@ -1,6 +1,0 @@
-{"event_type": "order_created", "timestamp": "2026-04-02T19:58:31.621850+00:00", "payload": {"order_id": 1, "user_id": "A", "amount": 10}, "_partition": 1, "_key": "A"}
-{"event_type": "order_created", "timestamp": "2026-04-02T19:58:31.623655+00:00", "payload": {"order_id": 2, "user_id": "B", "amount": 20}, "_partition": 1, "_key": "B"}
-{"event_type": "order_created", "timestamp": "2026-04-02T19:58:31.624770+00:00", "payload": {"order_id": 3, "user_id": "C", "amount": 30}, "_partition": 1, "_key": "C"}
-{"event_type": "order_created", "timestamp": "2026-04-02T19:58:31.625771+00:00", "payload": {"order_id": 4, "user_id": "A", "amount": 40}, "_partition": 1, "_key": "A"}
-{"event_type": "order_created", "timestamp": "2026-04-02T19:58:31.626877+00:00", "payload": {"order_id": 5, "user_id": "B", "amount": 50}, "_partition": 1, "_key": "B"}
-{"event_type": "order_created", "timestamp": "2026-04-02T19:58:31.628378+00:00", "payload": {"order_id": 6, "user_id": "C", "amount": 60}, "_partition": 1, "_key": "C"}

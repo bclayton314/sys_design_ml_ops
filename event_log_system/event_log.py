@@ -32,16 +32,17 @@ def reset_demo_state() -> None:
 # Partitioning
 # ------------------------
 def get_partition(topic: str, key: str) -> int:
-    """
-    Deterministically assign a key to a partition.
-    """
     key_bytes = key.encode("utf-8")
     hash_val = int(hashlib.md5(key_bytes).hexdigest(), 16)
     return hash_val % NUM_PARTITIONS
 
 
-def get_log_path(topic: str, partition: int) -> Path:
-    return LOG_DIR / f"{topic}_{partition}.log"
+def get_leader_log_path(topic: str, partition: int) -> Path:
+    return LOG_DIR / f"{topic}_{partition}_leader.log"
+
+
+def get_replica_log_path(topic: str, partition: int) -> Path:
+    return LOG_DIR / f"{topic}_{partition}_replica.log"
 
 
 # ------------------------
@@ -49,16 +50,22 @@ def get_log_path(topic: str, partition: int) -> Path:
 # ------------------------
 def append_event(topic: str, key: str, event: dict) -> int:
     partition = get_partition(topic, key)
-    log_path = get_log_path(topic, partition)
+
+    leader_path = get_leader_log_path(topic, partition)
+    replica_path = get_replica_log_path(topic, partition)
 
     record = {
         **event,
         "_partition": partition,
         "_key": key,
     }
+    line = json.dumps(record) + "\n"
 
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
+    with leader_path.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+    with replica_path.open("a", encoding="utf-8") as f:
+        f.write(line)
 
     return partition
 
@@ -66,15 +73,13 @@ def append_event(topic: str, key: str, event: dict) -> int:
 # ------------------------
 # Event reading
 # ------------------------
-def read_partition(topic: str, partition: int) -> list[dict]:
-    log_path = get_log_path(topic, partition)
-
-    if not log_path.exists():
+def read_log_file(path: Path, topic: str, partition: int, role: str) -> list[dict]:
+    if not path.exists():
         return []
 
     events = []
 
-    with log_path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8") as f:
         for offset, line in enumerate(f):
             line = line.strip()
             if not line:
@@ -84,13 +89,41 @@ def read_partition(topic: str, partition: int) -> list[dict]:
                 event = json.loads(line)
             except json.JSONDecodeError as e:
                 raise ValueError(
-                    f"{topic} partition {partition}: invalid JSON at line {offset + 1}: {e}"
+                    f"{topic} partition {partition} {role}: invalid JSON at line {offset + 1}: {e}"
                 ) from e
 
             event["_offset"] = offset
+            event["_read_role"] = role
             events.append(event)
 
     return events
+
+
+def read_partition(topic: str, partition: int) -> list[dict]:
+    """
+    Read from leader if available; otherwise fall back to replica.
+    """
+    leader_path = get_leader_log_path(topic, partition)
+    replica_path = get_replica_log_path(topic, partition)
+
+    leader_events = read_log_file(leader_path, topic, partition, role="leader")
+    if leader_events:
+        return leader_events
+
+    return read_log_file(replica_path, topic, partition, role="replica")
+
+
+def read_partition_from_role(topic: str, partition: int, role: str) -> list[dict]:
+    if role == "leader":
+        return read_log_file(
+            get_leader_log_path(topic, partition), topic, partition, role="leader"
+        )
+    if role == "replica":
+        return read_log_file(
+            get_replica_log_path(topic, partition), topic, partition, role="replica"
+        )
+
+    raise ValueError("role must be either 'leader' or 'replica'")
 
 
 # ------------------------
@@ -170,6 +203,50 @@ def consume_batch(consumer: str, topic: str, batch_size: int) -> list[dict]:
 
 
 # ------------------------
+# Replication inspection
+# ------------------------
+def get_replication_status(topic: str, partition: int) -> dict:
+    leader_events = read_partition_from_role(topic, partition, role="leader")
+    replica_events = read_partition_from_role(topic, partition, role="replica")
+
+    leader_count = len(leader_events)
+    replica_count = len(replica_events)
+
+    in_sync = leader_count == replica_count
+
+    return {
+        "topic": topic,
+        "partition": partition,
+        "leader_count": leader_count,
+        "replica_count": replica_count,
+        "in_sync": in_sync,
+    }
+
+
+def print_replication_status(topic: str) -> None:
+    print("\nReplication status:")
+    for partition in range(NUM_PARTITIONS):
+        status = get_replication_status(topic, partition)
+        print(
+            f"  partition={status['partition']} "
+            f"leader_count={status['leader_count']} "
+            f"replica_count={status['replica_count']} "
+            f"in_sync={status['in_sync']}"
+        )
+
+
+# ------------------------
+# Failure simulation
+# ------------------------
+def simulate_leader_failure(topic: str, partition: int) -> None:
+    """
+    Simulate leader failure by deleting the leader log file.
+    """
+    leader_path = get_leader_log_path(topic, partition)
+    leader_path.unlink(missing_ok=True)
+
+
+# ------------------------
 # Helpers
 # ------------------------
 def build_event(event_type: str, payload: dict) -> dict:
@@ -216,7 +293,7 @@ def main() -> None:
         {"order_id": 6, "user_id": "C", "amount": 60},
     ]
 
-    print("\nProducing events:")
+    print("\nProducing replicated events:")
     for order in orders:
         partition = append_event(
             topic=topic,
@@ -225,16 +302,23 @@ def main() -> None:
         )
         print(f"order_id={order['order_id']} -> partition {partition}")
 
+    print_replication_status(topic)
     describe_consumer(consumer, topic)
 
-    print("\nFirst batch consume:")
+    print("\nConsume before failure:")
     batch1 = consume_batch(consumer, topic, batch_size=2)
     for event in batch1:
         print(event)
 
     describe_consumer(consumer, topic)
 
-    print("\nSecond batch consume:")
+    failed_partition = 1
+    print(f"\nSimulating leader failure for partition {failed_partition} ...")
+    simulate_leader_failure(topic, failed_partition)
+
+    print_replication_status(topic)
+
+    print("\nConsume after leader failure (should fall back to replica where needed):")
     batch2 = consume_batch(consumer, topic, batch_size=2)
     for event in batch2:
         print(event)
