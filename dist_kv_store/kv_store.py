@@ -1,14 +1,84 @@
+import json
+from pathlib import Path
+import os
+
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+WAL_PATH = Path(SCRIPT_DIR) / "kv_store.wal"
+
+
 class KeyValueStore:
-    def __init__(self) -> None:
+    def __init__(self, wal_path: Path) -> None:
         """
-        Initialize an empty in-memory key-value store.
+        Initialize an in-memory key-value store and recover state from WAL.
         """
         self.store: dict[str, str] = {}
+        self.wal_path = wal_path
+
+        # Ensure the WAL file exists.
+        self.wal_path.touch(exist_ok=True)
+
+        # Recover in-memory state from WAL.
+        self.replay_wal()
+
+    def append_to_wal(self, record: dict) -> None:
+        """
+        Append one operation record to the write-ahead log.
+        """
+        with self.wal_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def replay_wal(self) -> None:
+        """
+        Rebuild in-memory state by replaying WAL records in order.
+        """
+        with self.wal_path.open("r", encoding="utf-8") as f:
+            for line_number, line in enumerate(f, start=1):
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f"Invalid JSON in WAL at line {line_number}: {e}"
+                    ) from e
+
+                op = record.get("op")
+                key = record.get("key")
+
+                if op == "PUT":
+                    value = record.get("value")
+                    if key is None or value is None:
+                        raise ValueError(
+                            f"Invalid PUT record in WAL at line {line_number}: {record}"
+                        )
+                    self.store[key] = value
+
+                elif op == "DELETE":
+                    if key is None:
+                        raise ValueError(
+                            f"Invalid DELETE record in WAL at line {line_number}: {record}"
+                        )
+                    self.store.pop(key, None)
+
+                else:
+                    raise ValueError(
+                        f"Unknown WAL operation at line {line_number}: {record}"
+                    )
 
     def put(self, key: str, value: str) -> None:
         """
-        Insert a new key or overwrite an existing key.
+        Log the PUT operation, then apply it to memory.
         """
+        record = {
+            "op": "PUT",
+            "key": key,
+            "value": value,
+        }
+        self.append_to_wal(record)
         self.store[key] = value
 
     def get(self, key: str) -> str | None:
@@ -19,12 +89,19 @@ class KeyValueStore:
 
     def delete(self, key: str) -> bool:
         """
-        Delete a key if it exists.
-        Returns True if deleted, False if the key was not present.
+        Log the DELETE operation if the key exists,
+        then remove it from memory.
+        Returns True if deleted, False otherwise.
         """
         if key in self.store:
+            record = {
+                "op": "DELETE",
+                "key": key,
+            }
+            self.append_to_wal(record)
             del self.store[key]
             return True
+
         return False
 
     def show_all(self) -> dict[str, str]:
@@ -45,9 +122,10 @@ def print_help() -> None:
 
 
 def run_repl() -> None:
-    kv = KeyValueStore()
+    kv = KeyValueStore(WAL_PATH)
 
-    print("Simple Redis-lite KV Store")
+    print("Simple Redis-lite KV Store with WAL Recovery")
+    print(f"WAL file: {WAL_PATH}")
     print("Type HELP for available commands.")
 
     while True:
