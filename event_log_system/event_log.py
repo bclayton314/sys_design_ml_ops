@@ -303,6 +303,69 @@ def get_all_user_features(processor_name: str) -> list[dict]:
 
 
 # ------------------------
+# Mock Prediction Layer
+# ------------------------
+def score_user_from_features(features: dict) -> float:
+    """
+    Very simple mock model.
+    This is just a hand-crafted scoring function to simulate inference.
+    """
+    order_count = float(features["order_count"])
+    total_spent = float(features["total_spent"])
+    avg_order_value = float(features["avg_order_value"])
+
+    score = (
+        0.2 * order_count
+        + 0.02 * total_spent
+        + 0.1 * avg_order_value
+    )
+    return round(score, 4)
+
+
+def predict_user_value(processor_name: str, user_id: str) -> dict:
+    """
+    Online inference for one user using features from the feature store layer.
+    """
+    feature_row = get_user_features(processor_name, user_id)
+    features = feature_row["features"]
+    prediction = score_user_from_features(features)
+
+    return {
+        "user_id": str(user_id),
+        "model_name": "mock_user_value_model",
+        "model_version": "v1.0.0",
+        "features": features,
+        "prediction": {
+            "user_value_score": prediction
+        },
+    }
+
+
+def predict_all_users(processor_name: str) -> list[dict]:
+    """
+    Batch-style inference over all users currently present in state.
+    """
+    feature_rows = get_all_user_features(processor_name)
+
+    predictions = []
+    for row in feature_rows:
+        features = row["features"]
+        prediction = score_user_from_features(features)
+
+        predictions.append({
+            "user_id": row["user_id"],
+            "model_name": "mock_user_value_model",
+            "model_version": "v1.0.0",
+            "features": features,
+            "prediction": {
+                "user_value_score": prediction
+            },
+        })
+
+    return predictions
+
+
+# ------------------------
 # Helpers
 # ------------------------
 def build_event(event_type: str, payload: dict) -> dict:
@@ -376,6 +439,14 @@ def main() -> None:
     print(json.dumps(get_user_features(processor, "A"), indent=2))
     print(json.dumps(get_user_features(processor, "B"), indent=2))
     print(json.dumps(get_user_features(processor, "Z"), indent=2))
+
+    print("\nMock prediction examples:")
+    print(json.dumps(predict_user_value(processor, "A"), indent=2))
+    print(json.dumps(predict_user_value(processor, "B"), indent=2))
+    print(json.dumps(predict_user_value(processor, "Z"), indent=2))
+
+    print("\nBatch mock predictions for all known users:")
+    print(json.dumps(predict_all_users(processor), indent=2))
 
 
 if __name__ == "__main__":
