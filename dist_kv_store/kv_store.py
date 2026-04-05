@@ -2,6 +2,7 @@ import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+import urllib.request
 import os
 
 
@@ -12,6 +13,23 @@ SNAPSHOT_PATH = Path(SCRIPT_DIR) / "kv_store.snapshot.json"
 HOST = "127.0.0.1"
 PORT = 8080
 
+ROLE = "leader"   # change to "follower" on second instance
+FOLLOWER_URL = "http://127.0.0.1:8081"
+
+def send_replication(record: dict) -> None:
+    if ROLE != "leader":
+        return
+
+    try:
+        req = urllib.request.Request(
+            url=f"{FOLLOWER_URL}/replicate",
+            data=json.dumps(record).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req)
+    except Exception as e:
+        print(f"[WARN] Replication failed: {e}")
 
 class KeyValueStore:
     def __init__(self, wal_path: Path, snapshot_path: Path) -> None:
@@ -150,8 +168,11 @@ class KeyValueStore:
             "key": key,
             "value": value,
         }
+
         self.append_to_wal(record)
         self.store[key] = value
+
+        send_replication(record)
 
     def get(self, key: str) -> str | None:
         return self.store.get(key)
@@ -162,9 +183,13 @@ class KeyValueStore:
                 "op": "DELETE",
                 "key": key,
             }
+
             self.append_to_wal(record)
             del self.store[key]
+
+            send_replication(record)
             return True
+
         return False
 
     def show_all(self) -> dict[str, str]:
