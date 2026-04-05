@@ -1,24 +1,22 @@
-import hashlib
 import json
-import urllib.request
 import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
+
+from hash_ring import ConsistentHashRing
 
 
 HOST = "127.0.0.1"
 PORT = 8090
 
-SHARDS = {
-    0: "http://127.0.0.1:8080",
-    1: "http://127.0.0.1:8081",
-    2: "http://127.0.0.1:8082",
-}
+NODES = [
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:8081",
+    "http://127.0.0.1:8082",
+]
 
-
-def get_shard_for_key(key: str) -> int:
-    hash_val = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
-    return hash_val % len(SHARDS)
+hash_ring = ConsistentHashRing(NODES, virtual_nodes=5)
 
 
 def forward_request(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
@@ -38,6 +36,8 @@ def forward_request(method: str, url: str, body: dict | None = None) -> tuple[in
     except urllib.error.HTTPError as e:
         payload = json.loads(e.read().decode("utf-8"))
         return e.code, payload
+    except urllib.error.URLError as e:
+        return 503, {"error": f"Unable to reach target node: {e.reason}"}
 
 
 class RouterHandler(BaseHTTPRequestHandler):
@@ -56,9 +56,14 @@ class RouterHandler(BaseHTTPRequestHandler):
         if not body:
             return {}
 
-        data = json.loads(body)
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON body: {e}") from e
+
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object.")
+
         return data
 
     def _extract_key_from_path(self) -> str | None:
@@ -67,20 +72,30 @@ class RouterHandler(BaseHTTPRequestHandler):
 
         if len(path_parts) == 2 and path_parts[0] == "kv":
             return path_parts[1]
+
         return None
 
     def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+
+        if parsed.path == "/ring":
+            self._send_json(200, {
+                "nodes": NODES,
+                "virtual_nodes": hash_ring.virtual_nodes,
+                "ring": hash_ring.describe_ring(),
+            })
+            return
+
         key = self._extract_key_from_path()
         if key is None:
             self._send_json(404, {"error": "Route not found"})
             return
 
-        shard_id = get_shard_for_key(key)
-        shard_url = SHARDS[shard_id]
-        status, payload = forward_request("GET", f"{shard_url}/kv/{key}")
+        target_node = hash_ring.get_node(key)
+        status, payload = forward_request("GET", f"{target_node}/kv/{key}")
 
-        payload["routed_by"] = "router"
-        payload["target_shard"] = shard_id
+        payload["routed_by"] = "consistent_hash_router"
+        payload["target_node"] = target_node
         self._send_json(status, payload)
 
     def do_PUT(self) -> None:
@@ -91,16 +106,15 @@ class RouterHandler(BaseHTTPRequestHandler):
 
         try:
             body = self._read_json_body()
-        except Exception as e:
+        except ValueError as e:
             self._send_json(400, {"error": str(e)})
             return
 
-        shard_id = get_shard_for_key(key)
-        shard_url = SHARDS[shard_id]
-        status, payload = forward_request("PUT", f"{shard_url}/kv/{key}", body)
+        target_node = hash_ring.get_node(key)
+        status, payload = forward_request("PUT", f"{target_node}/kv/{key}", body)
 
-        payload["routed_by"] = "router"
-        payload["target_shard"] = shard_id
+        payload["routed_by"] = "consistent_hash_router"
+        payload["target_node"] = target_node
         self._send_json(status, payload)
 
     def do_DELETE(self) -> None:
@@ -109,12 +123,11 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Route not found"})
             return
 
-        shard_id = get_shard_for_key(key)
-        shard_url = SHARDS[shard_id]
-        status, payload = forward_request("DELETE", f"{shard_url}/kv/{key}")
+        target_node = hash_ring.get_node(key)
+        status, payload = forward_request("DELETE", f"{target_node}/kv/{key}")
 
-        payload["routed_by"] = "router"
-        payload["target_shard"] = shard_id
+        payload["routed_by"] = "consistent_hash_router"
+        payload["target_node"] = target_node
         self._send_json(status, payload)
 
     def log_message(self, format: str, *args) -> None:
@@ -124,6 +137,14 @@ class RouterHandler(BaseHTTPRequestHandler):
 def run_router() -> None:
     server = HTTPServer((HOST, PORT), RouterHandler)
     print(f"Router running at http://{HOST}:{PORT}")
+    print("Nodes:")
+    for node in NODES:
+        print(f"  - {node}")
+    print("Routes:")
+    print("  GET    /kv/<key>")
+    print("  PUT    /kv/<key>")
+    print("  DELETE /kv/<key>")
+    print("  GET    /ring")
     server.serve_forever()
 
 
