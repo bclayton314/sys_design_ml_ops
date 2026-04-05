@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse
 
 from hash_ring import ConsistentHashRing
+from metrics import metrics, Timer
 
 
 HOST = "127.0.0.1"
@@ -18,6 +19,11 @@ NODES = [
 
 hash_ring = ConsistentHashRing(NODES, virtual_nodes=5)
 
+# Quorum settings
+N_REPLICAS = 3
+WRITE_QUORUM = 2
+READ_QUORUM = 2
+
 
 def forward_request(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
     data = None
@@ -30,14 +36,263 @@ def forward_request(method: str, url: str, body: dict | None = None) -> tuple[in
     req = urllib.request.Request(url=url, data=data, headers=headers, method=method)
 
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=2) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
             return resp.status, payload
+
     except urllib.error.HTTPError as e:
-        payload = json.loads(e.read().decode("utf-8"))
+        try:
+            payload = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            payload = {"error": f"HTTP error {e.code}"}
         return e.code, payload
+
     except urllib.error.URLError as e:
-        return 503, {"error": f"Unable to reach target node: {e.reason}"}
+        return 503, {
+            "error": f"Unable to reach target node: {e.reason}",
+            "unavailable": True,
+        }
+
+    except TimeoutError:
+        return 503, {
+            "error": "Target node request timed out",
+            "unavailable": True,
+        }
+
+
+def check_node_health(node_url: str) -> dict:
+    try:
+        req = urllib.request.Request(f"{node_url}/health", method="GET")
+        with urllib.request.urlopen(req, timeout=1) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+            return {
+                "node": node_url,
+                "reachable": True,
+                "status_code": resp.status,
+                "payload": payload,
+            }
+    except Exception as e:
+        return {
+            "node": node_url,
+            "reachable": False,
+            "error": str(e),
+        }
+
+
+def repair_replicas(key: str, correct_value: str, stale_nodes: list[str]) -> dict:
+    """
+    Send PUT requests to stale replicas to repair them.
+    """
+    metrics.inc("read_repair_attempts")
+
+    repaired = 0
+
+    for node in stale_nodes:
+        status, _ = forward_request(
+            "PUT",
+            f"{node}/kv/{key}",
+            {"value": correct_value},
+        )
+
+        if 200 <= status < 300:
+            repaired += 1
+
+    if repaired == len(stale_nodes):
+        metrics.inc("read_repair_success")
+    else:
+        metrics.inc("read_repair_failures")
+
+    return {
+        "attempted": len(stale_nodes),
+        "repaired": repaired,
+        "stale_nodes": stale_nodes,
+        "correct_value": correct_value,
+    }
+
+
+def quorum_put(key: str, value: str) -> tuple[int, dict]:
+    metrics.inc("put_requests")
+
+    with Timer("put_latency_ms"):
+        replicas = hash_ring.get_nodes(key, N_REPLICAS)
+
+        successes = []
+        failures = []
+
+        for node in replicas:
+            status, payload = forward_request(
+                "PUT",
+                f"{node}/kv/{key}",
+                {"value": value},
+            )
+
+            result = {
+                "node": node,
+                "status": status,
+                "payload": payload,
+            }
+
+            if 200 <= status < 300:
+                successes.append(result)
+            else:
+                failures.append(result)
+
+        if len(successes) >= WRITE_QUORUM:
+            metrics.inc("put_quorum_success")
+            return 200, {
+                "message": "write quorum satisfied",
+                "key": key,
+                "value": value,
+                "replicas": replicas,
+                "write_quorum": WRITE_QUORUM,
+                "acks": len(successes),
+                "successes": successes,
+                "failures": failures,
+            }
+
+        metrics.inc("put_quorum_failure")
+        return 503, {
+            "error": "write quorum not satisfied",
+            "key": key,
+            "value": value,
+            "replicas": replicas,
+            "write_quorum": WRITE_QUORUM,
+            "acks": len(successes),
+            "successes": successes,
+            "failures": failures,
+        }
+
+
+def quorum_delete(key: str) -> tuple[int, dict]:
+    metrics.inc("delete_requests")
+
+    with Timer("delete_latency_ms"):
+        replicas = hash_ring.get_nodes(key, N_REPLICAS)
+
+        successes = []
+        failures = []
+
+        for node in replicas:
+            status, payload = forward_request("DELETE", f"{node}/kv/{key}")
+
+            result = {
+                "node": node,
+                "status": status,
+                "payload": payload,
+            }
+
+            if 200 <= status < 300:
+                successes.append(result)
+            else:
+                failures.append(result)
+
+        if len(successes) >= WRITE_QUORUM:
+            metrics.inc("delete_quorum_success")
+            return 200, {
+                "message": "delete quorum satisfied",
+                "key": key,
+                "replicas": replicas,
+                "write_quorum": WRITE_QUORUM,
+                "acks": len(successes),
+                "successes": successes,
+                "failures": failures,
+            }
+
+        metrics.inc("delete_quorum_failure")
+        return 503, {
+            "error": "delete quorum not satisfied",
+            "key": key,
+            "replicas": replicas,
+            "write_quorum": WRITE_QUORUM,
+            "acks": len(successes),
+            "successes": successes,
+            "failures": failures,
+        }
+
+
+def quorum_get(key: str) -> tuple[int, dict]:
+    metrics.inc("get_requests")
+
+    with Timer("get_latency_ms"):
+        replicas = hash_ring.get_nodes(key, N_REPLICAS)
+
+        responses = []
+        failures = []
+
+        for node in replicas:
+            status, payload = forward_request("GET", f"{node}/kv/{key}")
+
+            result = {
+                "node": node,
+                "status": status,
+                "payload": payload,
+            }
+
+            if 200 <= status < 300:
+                responses.append(result)
+            else:
+                failures.append(result)
+
+        if len(responses) < READ_QUORUM:
+            metrics.inc("get_quorum_failure")
+            return 503, {
+                "error": "read quorum not satisfied",
+                "key": key,
+                "replicas": replicas,
+                "read_quorum": READ_QUORUM,
+                "responses": len(responses),
+                "successes": responses,
+                "failures": failures,
+            }
+
+        metrics.inc("get_quorum_success")
+
+        value_counts: dict[str, int] = {}
+        node_values: dict[str, str] = {}
+
+        for result in responses:
+            payload = result["payload"]
+            value = payload.get("value")
+            if value is None:
+                continue
+
+            value_counts[value] = value_counts.get(value, 0) + 1
+            node_values[result["node"]] = value
+
+        if not value_counts:
+            return 404, {
+                "error": f"Key '{key}' not found on quorum read",
+                "key": key,
+                "replicas": replicas,
+                "read_quorum": READ_QUORUM,
+                "successes": responses,
+                "failures": failures,
+            }
+
+        # Majority value wins
+        correct_value = max(value_counts, key=value_counts.get)
+
+        stale_nodes = [
+            node for node, val in node_values.items()
+            if val != correct_value
+        ]
+
+        repair_result = None
+        if stale_nodes:
+            repair_result = repair_replicas(key, correct_value, stale_nodes)
+
+        return 200, {
+            "message": "read quorum satisfied",
+            "key": key,
+            "value": correct_value,
+            "replicas": replicas,
+            "read_quorum": READ_QUORUM,
+            "responses": len(responses),
+            "value_votes": value_counts,
+            "successes": responses,
+            "failures": failures,
+            "read_repair": repair_result,
+        }
 
 
 class RouterHandler(BaseHTTPRequestHandler):
@@ -86,16 +341,32 @@ class RouterHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if parsed.path == "/cluster/health":
+            health = [check_node_health(node) for node in NODES]
+            self._send_json(200, {"cluster_health": health})
+            return
+
+        if parsed.path == "/quorum/config":
+            self._send_json(200, {
+                "nodes": NODES,
+                "N_REPLICAS": N_REPLICAS,
+                "WRITE_QUORUM": WRITE_QUORUM,
+                "READ_QUORUM": READ_QUORUM,
+            })
+            return
+
+        if parsed.path == "/metrics":
+            self._send_json(200, metrics.summary())
+            return
+
         key = self._extract_key_from_path()
         if key is None:
             self._send_json(404, {"error": "Route not found"})
             return
 
-        target_node = hash_ring.get_node(key)
-        status, payload = forward_request("GET", f"{target_node}/kv/{key}")
-
-        payload["routed_by"] = "consistent_hash_router"
-        payload["target_node"] = target_node
+        status, payload = quorum_get(key)
+        payload["routed_by"] = "quorum_router"
+        payload["key"] = key
         self._send_json(status, payload)
 
     def do_PUT(self) -> None:
@@ -110,11 +381,18 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": str(e)})
             return
 
-        target_node = hash_ring.get_node(key)
-        status, payload = forward_request("PUT", f"{target_node}/kv/{key}", body)
+        if "value" not in body:
+            self._send_json(400, {"error": "Missing 'value' in request body"})
+            return
 
-        payload["routed_by"] = "consistent_hash_router"
-        payload["target_node"] = target_node
+        value = body["value"]
+        if not isinstance(value, str):
+            self._send_json(400, {"error": "'value' must be a string"})
+            return
+
+        status, payload = quorum_put(key, value)
+        payload["routed_by"] = "quorum_router"
+        payload["key"] = key
         self._send_json(status, payload)
 
     def do_DELETE(self) -> None:
@@ -123,11 +401,9 @@ class RouterHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Route not found"})
             return
 
-        target_node = hash_ring.get_node(key)
-        status, payload = forward_request("DELETE", f"{target_node}/kv/{key}")
-
-        payload["routed_by"] = "consistent_hash_router"
-        payload["target_node"] = target_node
+        status, payload = quorum_delete(key)
+        payload["routed_by"] = "quorum_router"
+        payload["key"] = key
         self._send_json(status, payload)
 
     def log_message(self, format: str, *args) -> None:
@@ -145,6 +421,9 @@ def run_router() -> None:
     print("  PUT    /kv/<key>")
     print("  DELETE /kv/<key>")
     print("  GET    /ring")
+    print("  GET    /cluster/health")
+    print("  GET    /quorum/config")
+    print("  GET    /metrics")
     server.serve_forever()
 
 

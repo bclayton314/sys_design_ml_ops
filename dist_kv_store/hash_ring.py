@@ -36,6 +36,36 @@ class ConsistentHashRing:
 
         return self.node_map[self.ring[idx]]
 
+    def get_nodes(self, key: str, replica_count: int) -> list[str]:
+        """
+        Return the next replica_count unique physical nodes clockwise on the ring.
+        """
+        if replica_count <= 0:
+            raise ValueError("replica_count must be positive")
+
+        h = hash_str(key)
+        idx = bisect.bisect(self.ring, h)
+
+        if idx == len(self.ring):
+            idx = 0
+
+        result: list[str] = []
+        seen: set[str] = set()
+        ring_len = len(self.ring)
+
+        for step in range(ring_len):
+            ring_idx = (idx + step) % ring_len
+            node = self.node_map[self.ring[ring_idx]]
+
+            if node not in seen:
+                seen.add(node)
+                result.append(node)
+
+            if len(result) == min(replica_count, len(self.nodes)):
+                break
+
+        return result
+
     def describe_ring(self) -> list[dict]:
         return [
             {"hash": h, "node": self.node_map[h]}

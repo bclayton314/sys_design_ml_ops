@@ -46,6 +46,13 @@ def make_handler(kv_store: KeyValueStore, shard_id: int):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
 
+            if parsed.path == "/health":
+                self._send_json(200, {
+                    "status": "ok",
+                    "shard_id": shard_id,
+                })
+                return
+
             if parsed.path == "/kv":
                 self._send_json(200, {
                     "shard_id": shard_id,
